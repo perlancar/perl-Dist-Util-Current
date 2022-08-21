@@ -170,9 +170,10 @@ it.
 
 =item 4. Try C<this_dist()> on each of C<@INC>.
 
-Will check C<this_dist()> against each directory found in C<@INC> and return the
-first found distribution name. Additionally, if an C<@INC> entry ends in "lib",
-will also try C<this_dist()> against the parent directory.
+Will guess using L<App::ThisDist>'s C<this_dist()> against each directory found
+in C<@INC> and return the first found distribution name. Additionally, if an
+C<@INC> entry ends in "lib", will also try C<this_dist()> against the parent
+directory (because that's where a dist meta or F<dist.ini> file is found).
 
 =back
 
@@ -182,5 +183,7 @@ TODO: Query the OS's package manager.
 
 
 =head1 SEE ALSO
+
+L<App::ThisDist>
 
 L<Dist::Util>
