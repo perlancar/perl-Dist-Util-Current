@@ -1,11 +1,10 @@
-package Dist::Util;
+package Dist::Util::Current;
 
 use strict;
 use warnings;
+use Log::ger;
 
-use Config;
 use Exporter 'import';
-use File::Spec;
 
 # AUTHORITY
 # DATE
@@ -14,110 +13,102 @@ use File::Spec;
 
 our @ISA = qw(Exporter);
 our @EXPORT_OK = qw(
-                       list_dist_modules
-                       list_dists
-                       packlist_for
+                       my_dist
                );
 
-sub packlist_for {
-    my $mod = shift;
+sub _packlist_has_entry {
+    my ($packlist, $filename, $dist) = @_;
 
-    unless ($mod =~ s/\.pm\z//) {
-        $mod =~ s!::!/!g;
+    open my $fh, '<', $packlist or do {
+        log_warn "Can't open packlist '$packlist': $!";
+        return 0;
+    };
+    while (my $line = <$fh>) {
+        chomp $line;
+        if ($line eq $filename) {
+            log_trace "my_dist(): Using dist from packlist %s because %s is listed in it: %s",
+                $packlist, $filename, $dist;
+            return 1;
+        }
+    }
+    0;
+}
+
+sub my_dist {
+    my %args = @_;
+
+    my $filename = $args{filename};
+    my $package  = $args{package};
+
+    if (!defined($filename) || !defined($package)) {
+        my @caller = caller(0);
+        $package  = $caller[0] unless defined $package;
+        $filename = $caller[1] unless defined $filename;
     }
 
-    for (@INC) {
-        next if ref($_);
-        my $f = "$_/$Config{archname}/auto/$mod/.packlist";
-        return $f if -f $f;
+  DIST_PACKAGE_VARIABLE: {
+        no strict 'refs'; ## no critic: TestingAndDebugging::ProhibitNoStrict
+        my $dist = ${"$package\::DIST"};
+        last unless defined $dist;
+        log_trace "my_dist(): Using dist from package $package\'s \$DIST: %s", $dist;
+        return $dist;
     }
+
+  PACKLIST_FOR_MOD_OR_SUPERMODS: {
+        require Dist::Util;
+        my @namespace_parts = split /::/, $package;
+        for my $i (reverse 0..$#namespace_parts) {
+            my $mod = join "::", @namespace_parts[0 .. $i];
+            my $packlist = Dist::Util::packlist_for($mod);
+            next unless defined $packlist;
+            my $dist = $mod; $dist =~ s!::!-!g;
+            return $dist if _packlist_has_entry($packlist, $filename, $dist);
+        }
+    }
+
+  PACKLIST_IN_INC: {
+        require Dist::Util;
+        log_trace "my_dist(): Listing all distributions ...";
+        my @recs = Dist::Util::list_dists(detail => 1);
+        for my $rec (@recs) {
+            return $rec->{dist} if _packlist_has_entry($rec->{packlist}, $filename, $rec->{dist});
+        }
+    }
+
+  THIS_DIST_AGAINST_INC: {
+        require App::ThisDist;
+        my @entries = reverse grep {!ref} @INC;
+        for my $i (reverse 0 .. $#entries) {
+            my $entry = $entries[$i];
+            if ($entry =~ s!(\A|/|\\)lib\z!!) {
+                $entry = "." if !length($entry);
+                splice @entries, $i, 0, $entry;
+            }
+        }
+        @entries = reverse @entries;
+        #log_trace "entries = %s", \@entries;
+
+        for my $entry (@entries) {
+            my $dist = App::ThisDist::this_dist($entry);
+            if (defined $dist) {
+                log_trace "my_dist(): Using dist from this_dist(%s): %s", $entry, $dist;
+                return $dist;
+            }
+        }
+    }
+
+    log_trace "my_dist(): Can't guess dist for filename=%s, package=%s", $filename, $package;
     undef;
 }
 
-sub list_dists {
-    require File::Find;
-
-    my %args = @_;
-
-    my %dists;
-    for my $inc (@INC) {
-        next if ref($inc);
-        my $prefix = "$inc/$Config{archname}/auto";
-        next unless -d $prefix;
-
-        File::Find::find(
-            sub {
-                return unless $_ eq '.packlist';
-                my $dist = substr($File::Find::dir, length($prefix)+1);
-                # XXX use platform-neutral path separator
-                $dist =~ s!/!-!g;
-                $dists{$dist} = {dist=>$dist, packlist => "$File::Find::dir/$_"};
-            },
-            $prefix,
-        );
-    }
-    if ($args{detail}) {
-        return values %dists;
-    } else {
-        return (sort keys %dists);
-    }
-}
-
-sub list_dist_modules {
-    my $mod = shift;
-
-    # convenience: convert Foo-Bar to Foo::Bar
-    $mod =~ s/-/::/g;
-
-    my $packlist = packlist_for($mod);
-    return () unless $packlist;
-
-    # path structure for .packlist: <libprefix> + <arch> + "auto" +
-    # /Module/Name/ + "/.packlist". we want to get <libprefix>
-    my $libprefix;
-    {
-        my ($vol, $dirs, $name) = File::Spec->splitpath(
-            File::Spec->rel2abs($packlist));
-        my @dirs = File::Spec->splitdir($dirs);
-        for (0..@dirs-2) {
-            if ($dirs[$_] eq $Config{archname} && $dirs[$_+1] eq 'auto') {
-                $libprefix = File::Spec->catpath(
-                    $vol, File::Spec->catdir(@dirs[0..$_-1]));
-                last;
-            }
-        }
-        die "Can't find libprefix for packlist $packlist" unless $libprefix;
-    }
-
-    open my($fh), "<", $packlist or return ();
-    my @mods;
-    while (my $l = <$fh>) {
-        chomp $l;
-        next unless $l =~ /\.pm\z/;
-        $l =~ s/\A\Q$libprefix\E// or next;
-        my @dirs = File::Spec->splitdir($l);
-        shift @dirs; # ""
-        shift @dirs if $dirs[0] eq $Config{archname};
-        $dirs[-1] =~ s/\.pm\z//;
-        push @mods, join("::", @dirs);
-    }
-
-    @mods;
-}
-
 1;
-# ABSTRACT: Dist-related utilities
+# ABSTRACT: Guess the current Perl distribution name
 
 =head1 SYNOPSIS
 
- use Dist::Util qw(
-     list_dist_modules
-     list_dists
-     packlist_for
- );
+ use Dist::Util::Current qw(my_dist);
 
- say packlist_for("Text::ANSITable"); # sample output: /home/steven/perl5/perlbrew/perls/perl-5.18.2/lib/site_perl/5.18.2/x86_64-linux/auto/Text/ANSITable/.packlist
- my @mods = list_dist_modules("Text::ANSITable"); # -> ("Text::ANSITable", "Text::ANSITable::BorderStyle::Default", "Text::ANSITable::ColorTheme::Default")
+ my $dist = my_dist();
 
 
 =head1 DESCRIPTION
@@ -125,57 +116,71 @@ sub list_dist_modules {
 
 =head1 FUNCTIONS
 
-=head2 packlist_for($mod) => STR
-
-Find C<.packlist> file for installed module C<$mod> (which can be in the form of
-C<Package::SubPkg> or C<Package/SubPkg.pm>). Return undef if none is found.
-
-Depending on the content of C<@INC>, the returned path may be absolute or
-relative.
-
-Caveat: many Linux distributions strip C<.packlist> files.
-
-=head2 list_dists
+=head2 my_dist
 
 Usage:
 
- list_dists(%opts) => LIST
+ my_dist(%opts) => STR|HASH
 
-Find all C<.packlist> files in C<@INC> and then pick the dist names from the
-paths, because C<.packlist> files are put in:
+Guess the current distribution (the Perl distribution associated with the source
+code) using one of several ways.
 
- $INC/$Config{archname}/auto/Foo/Bar/.packlist
-
-Caveat: many Linux distributions strip C<.packlist> files.
-
-Known options:
+Options:
 
 =over
 
-=item * detail
+=item * filename
 
-Bool. If set to true, instead of a list of distribution names, the function will
-return a list of hashrefs containing detailed information e.g.:
+String. The path to source code file. If unspecified, will use file name
+retrieved from C<caller(0)>.
 
- (
-   {dist=>"Foo-Bar", packlist=>"/home/u1/perl5/perlbrew/perls/perl-5.34.0/lib/site_perl/5.34.0/x86_64-linux/auto/Foo/Bar/.packlist"},
-   ...
- )
+=item * package
+
+String. The caller's package. If unspecified, will use package name retrieved
+from C<caller(0)>.
 
 =back
 
-=head2 list_dist_modules($mod) => LIST
+How the function works:
 
-Given installed module name C<$mod> (which must be the name of the main module
-of its distribution), list all the modules in the distribution. This is done by
-first finding the C<.packlist> file, then look at all the C<.pm> files listed in
-the packlist.
+=over
 
-Will return empty list if fails to get the packlist.
+=item 1. $DIST
 
-Caveat: many Linux distributions strip C<.packlist> files.
+If the caller's package defines a package variable C<$DIST>, will return this.
+
+=item 2. F<.packlist> for module or supermodules
+
+Will check F<.packlist> for module or supermodules. For example, if module is
+L<Algorithm::Backoff::Constant> then will try to check for F<.packlist> for
+C<Algorithm::Backoff::Constant>, C<Algorithm::Backoff>, and C<Algorithm>.
+
+For each found F<.packlist> will read its contents and check whether the
+F<filename> is listed. If yes, then we've found the distribution name and return
+it.
+
+=item 3. F<.packlist> in C<@INC>
+
+Will check F<.packlist> in directories listed in C<@INC>. Will use
+L<Dist::Util>'s C<list_dists()> for this.
+
+For each found F<.packlist> will read its contents and check whether the
+F<filename> is listed. If yes, then we've found the distribution name and return
+it.
+
+=item 4. Try C<this_dist()> on each of C<@INC>.
+
+Will check C<this_dist()> against each directory found in C<@INC> and return the
+first found distribution name. Additionally, if an C<@INC> entry ends in "lib",
+will also try C<this_dist()> against the parent directory.
+
+=back
+
+If all of the above fails, we return undef.
+
+TODO: Query the OS's package manager.
 
 
 =head1 SEE ALSO
 
-L<Dist::Util::Current>
+L<Dist::Util>
