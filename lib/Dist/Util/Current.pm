@@ -54,9 +54,9 @@ sub my_dist {
         return $dist;
     }
 
+    my @namespace_parts = split /::/, $package;
   PACKLIST_FOR_MOD_OR_SUPERMODS: {
         require Dist::Util;
-        my @namespace_parts = split /::/, $package;
         for my $i (reverse 0..$#namespace_parts) {
             my $mod = join "::", @namespace_parts[0 .. $i];
             my $packlist = Dist::Util::packlist_for($mod);
@@ -75,20 +75,14 @@ sub my_dist {
         }
     }
 
-  THIS_DIST_AGAINST_INC: {
+  THIS_DIST: {
         require App::ThisDist;
-        my @entries = reverse grep {!ref} @INC;
-        for my $i (reverse 0 .. $#entries) {
-            my $entry = $entries[$i];
-            if ($entry =~ s!(\A|/|\\)lib\z!!) {
-                $entry = "." if !length($entry);
-                splice @entries, $i, 0, $entry;
-            }
+        my @entries = (".");
+        for (1 .. @namespace_parts) {
+            push @entries, join("/", (("..") x $_));
         }
-        @entries = reverse @entries;
-        #log_trace "entries = %s", \@entries;
-
         for my $entry (@entries) {
+            log_trace "my_dist(): Checking with this_dist($entry) ...";
             my $dist = App::ThisDist::this_dist($entry);
             if (defined $dist) {
                 log_trace "my_dist(): Using dist from this_dist(%s): %s", $entry, $dist;
@@ -168,12 +162,10 @@ For each found F<.packlist> will read its contents and check whether the
 F<filename> is listed. If yes, then we've found the distribution name and return
 it.
 
-=item 4. Try C<this_dist()> on each of C<@INC>.
+=item 4. Try C<this_dist()> against current directory and several levels up
 
-Will guess using L<App::ThisDist>'s C<this_dist()> against each directory found
-in C<@INC> and return the first found distribution name. Additionally, if an
-C<@INC> entry ends in "lib", will also try C<this_dist()> against the parent
-directory (because that's where a dist meta or F<dist.ini> file is found).
+Will guess using L<App::ThisDist>'s C<this_dist()> against the current
+directory and several levels up.
 
 =back
 
